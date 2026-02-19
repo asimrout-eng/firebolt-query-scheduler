@@ -3255,6 +3255,19 @@ left join (
 select tb_report.*,tb_lead_result_case.* from tb_lead_result_case cross join tb_report
 );
 
+drop table if exists fair.public.dm_lead_channel_details;
+
+create table fair.public.dm_lead_channel_details as (
+select
+	loan_id as lead_id,
+	source,
+	channel,
+	sub_category,
+	category
+from
+	fair.public.dm_lead_details
+);
+
 drop table if exists fair.public.dm_lead_borrower_basic_details;
 
 create table fair.public.dm_lead_borrower_basic_details as (

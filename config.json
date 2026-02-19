@@ -6,52 +6,58 @@
   },
   "schedules": [
     {
-      "name": "dm_collection_master",
-      "s3_key": "queries/dm_collection_master.sql",
-      "schedule": "cron(0 2 * * ? *)",
-      "description": "Daily (placeholder - update with IST cron)"
-    },
-    {
       "name": "dm_disburse_master",
       "s3_key": "queries/dm_disburse_master.sql",
-      "schedule": "cron(5 2 * * ? *)",
-      "description": "Daily (placeholder - update with IST cron)"
-    },
-    {
-      "name": "dm_lead_funnel_cd",
-      "s3_key": "queries/dm_lead_funnel_cd.sql",
-      "schedule": "cron(10 2 * * ? *)",
-      "description": "Daily (placeholder - update with IST cron)"
-    },
-    {
-      "name": "dm_loan_details",
-      "s3_key": "queries/dm_loan_details.sql",
-      "schedule": "cron(15 2 * * ? *)",
-      "description": "Daily ~2 min (placeholder - update with IST cron)"
-    },
-    {
-      "name": "dm_static_pool",
-      "s3_key": "queries/dm_static_pool.sql",
-      "schedule": "cron(20 2 * * ? *)",
-      "description": "Daily ~2 min (placeholder - update with IST cron)"
-    },
-    {
-      "name": "dm_loan_details_at_monthly_current",
-      "s3_key": "queries/dm_loan_details_at_monthly_incremental.sql",
-      "schedule": "cron(25 2 * * ? *)",
-      "description": "Daily ~5 min (placeholder - update with IST cron)"
-    },
-    {
-      "name": "dm_loan_details_at_monthly_full",
-      "s3_key": "queries/dm_loan_details_at_monthly_optimized.sql",
-      "schedule": "cron(0 3 1 * ? *)",
-      "description": "Monthly 1st ~21 min (placeholder - update with IST cron)"
+      "schedule": "cron(0 0/3 * * ? *)",
+      "description": "Every 3 hours (00:00, 03:00, 06:00, ... 21:00 UTC)"
     },
     {
       "name": "dm_lead_details",
       "s3_key": "queries/dm_lead_details.sql",
-      "schedule": "cron(0 4 * * ? *)",
-      "description": "Daily ~40 min, includes channel/tenure/pincode/lead_channel/borrower_basic (placeholder - update with IST cron)"
+      "schedule": "cron(1 0 * * ? *)",
+      "description": "Daily at 00:01 UTC — includes lead_channel_details + borrower_basic_details (~40 min)"
+    },
+    {
+      "name": "dm_loan_details",
+      "s3_key": "queries/dm_loan_details.sql",
+      "schedule": "cron(1 2 * * ? *)",
+      "description": "Daily at 02:01 UTC (~2 min)"
+    },
+    {
+      "name": "dm_lead_funnel_cd",
+      "s3_key": "queries/dm_lead_funnel_cd.sql",
+      "schedule": "cron(0 3 * * ? *)",
+      "description": "Daily at 03:00 UTC (~1 min)"
+    },
+    {
+      "name": "dm_collection_master",
+      "s3_key": "queries/dm_collection_master.sql",
+      "schedule": "cron(1 3 * * ? *)",
+      "description": "Daily at 03:01 UTC (~1 min)"
+    },
+    {
+      "name": "dm_loan_details_at_monthly_daily",
+      "s3_key": "queries/dm_loan_details_at_monthly_incremental.sql",
+      "schedule": "cron(30 14 * * ? *)",
+      "description": "Daily at 14:30 UTC — current month status (~5 min)"
+    },
+    {
+      "name": "dm_loan_details_at_monthly_weekly",
+      "s3_key": "queries/dm_loan_details_at_monthly_optimized.sql",
+      "schedule": "cron(30 15 ? * MON *)",
+      "description": "Every Monday at 15:30 UTC — full rebuild (~21 min)"
+    },
+    {
+      "name": "dm_loan_details_at_monthly_monthly",
+      "s3_key": "queries/dm_loan_details_at_monthly_optimized.sql",
+      "schedule": "cron(30 16 6 * ? *)",
+      "description": "Every 6th of month at 16:30 UTC — full rebuild (~21 min)"
+    },
+    {
+      "name": "dm_static_pool",
+      "s3_key": "queries/dm_static_pool.sql",
+      "schedule": "cron(30 19 * * ? *)",
+      "description": "Daily at 19:30 UTC (~2 min)"
     }
   ]
 }
