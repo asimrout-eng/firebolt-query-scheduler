@@ -1,0 +1,57 @@
+{
+  "firebolt": {
+    "account": "faircentindia",
+    "database": "fair",
+    "engine": "dm_engine"
+  },
+  "schedules": [
+    {
+      "name": "dm_collection_master",
+      "s3_key": "queries/dm_collection_master.sql",
+      "schedule": "cron(0 2 * * ? *)",
+      "description": "Daily (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_disburse_master",
+      "s3_key": "queries/dm_disburse_master.sql",
+      "schedule": "cron(5 2 * * ? *)",
+      "description": "Daily (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_lead_funnel_cd",
+      "s3_key": "queries/dm_lead_funnel_cd.sql",
+      "schedule": "cron(10 2 * * ? *)",
+      "description": "Daily (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_loan_details",
+      "s3_key": "queries/dm_loan_details.sql",
+      "schedule": "cron(15 2 * * ? *)",
+      "description": "Daily ~2 min (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_static_pool",
+      "s3_key": "queries/dm_static_pool.sql",
+      "schedule": "cron(20 2 * * ? *)",
+      "description": "Daily ~2 min (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_loan_details_at_monthly_current",
+      "s3_key": "queries/dm_loan_details_at_monthly_incremental.sql",
+      "schedule": "cron(25 2 * * ? *)",
+      "description": "Daily ~5 min (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_loan_details_at_monthly_full",
+      "s3_key": "queries/dm_loan_details_at_monthly_optimized.sql",
+      "schedule": "cron(0 3 1 * ? *)",
+      "description": "Monthly 1st ~21 min (placeholder - update with IST cron)"
+    },
+    {
+      "name": "dm_lead_details",
+      "s3_key": "queries/dm_lead_details.sql",
+      "schedule": "cron(0 4 * * ? *)",
+      "description": "Daily ~40 min, includes channel/tenure/pincode/lead_channel/borrower_basic (placeholder - update with IST cron)"
+    }
+  ]
+}
