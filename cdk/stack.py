@@ -76,14 +76,23 @@ class FireboltSchedulerStack(Stack):
             alert_topic.add_subscription(subs.EmailSubscription(alert_email))
 
         # ──────────────────────────────────────────────────────────
-        # S3 Bucket
+        # S3 Bucket — use existing client bucket or create new
         # ──────────────────────────────────────────────────────────
-        sql_bucket = s3.Bucket(
-            self, "SqlBucket",
-            bucket_name=f"firebolt-scheduler-{self.account}-{self.region}",
-            removal_policy=RemovalPolicy.RETAIN,
-            auto_delete_objects=False,
-        )
+        existing_bucket = self.node.try_get_context("s3_bucket")
+        if existing_bucket:
+            sql_bucket = s3.Bucket.from_bucket_name(
+                self, "SqlBucket", existing_bucket,
+            )
+        else:
+            sql_bucket = s3.Bucket(
+                self, "SqlBucket",
+                bucket_name=f"firebolt-scheduler-{self.account}-{self.region}",
+                removal_policy=RemovalPolicy.RETAIN,
+                auto_delete_objects=False,
+            )
+
+        sql_prefix = self.node.try_get_context("s3_prefix") or "queries"
+
         queries_dir = os.path.join(os.path.dirname(__file__), "..", "queries")
         if os.path.isdir(queries_dir) and any(
             f.endswith(".sql") for f in os.listdir(queries_dir)
@@ -92,7 +101,7 @@ class FireboltSchedulerStack(Stack):
                 self, "DeploySqlFiles",
                 sources=[s3deploy.Source.asset(queries_dir)],
                 destination_bucket=sql_bucket,
-                destination_key_prefix="queries",
+                destination_key_prefix=sql_prefix,
             )
 
         # ──────────────────────────────────────────────────────────
