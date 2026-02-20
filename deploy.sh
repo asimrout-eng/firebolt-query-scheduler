@@ -68,8 +68,14 @@ echo "  OK"
 echo "[6/7] Uploading SQL files to s3://fcanalytics/firebolt_dms_job/scheduled_queries/..."
 cd "$(dirname "$0")/.."
 if ls queries/*.sql 1>/dev/null 2>&1; then
-    aws s3 sync queries/ s3://fcanalytics/firebolt_dms_job/scheduled_queries/ --exclude "*" --include "*.sql"
-    echo "  OK"
+    if aws s3 sync queries/ s3://fcanalytics/firebolt_dms_job/scheduled_queries/ --exclude "*" --include "*.sql" 2>/dev/null; then
+        echo "  OK"
+    else
+        echo "  WARNING: Could not upload SQL files (Access Denied)."
+        echo "  Please upload them manually via AWS Console or a role with S3 write access:"
+        echo "    aws s3 sync queries/ s3://fcanalytics/firebolt_dms_job/scheduled_queries/ --exclude '*' --include '*.sql'"
+        echo "  Continuing with deploy..."
+    fi
 else
     echo "  No .sql files in queries/ — skipping upload"
 fi
