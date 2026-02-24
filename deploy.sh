@@ -18,38 +18,38 @@ echo "[1/7] Checking AWS credentials..."
 aws sts get-caller-identity >/dev/null 2>&1 || { echo "ERROR: AWS CLI not configured. Run 'aws configure' first."; exit 1; }
 echo "  OK"
 
-echo "[2/7] Auto-detecting Firebolt credentials from CDC Lambda..."
+echo "[2/7] Auto-detecting Firebolt credentials..."
 SECRET_ARN=""
-# Try common CDC Lambda function names
-for FUNC_NAME in firebolt-cdc-handler firebolt-cdc-lambda firebolt_cdc_handler; do
-    ARN=$(aws lambda get-function-configuration \
-        --function-name "$FUNC_NAME" \
-        --query "Environment.Variables.FIREBOLT_SECRET_ARN" \
-        --output text 2>/dev/null || true)
-    if [ -n "$ARN" ] && [ "$ARN" != "None" ] && [ "$ARN" != "null" ]; then
-        SECRET_ARN="$ARN"
-        echo "  Found existing secret from Lambda '$FUNC_NAME'"
-        echo "  ARN: $SECRET_ARN"
-        break
-    fi
-done
+
+# Try to find secret named exactly "firebolt/scheduler-credentials"
+EXACT_ARN=$(aws secretsmanager describe-secret \
+    --secret-id "firebolt/scheduler-credentials" \
+    --query "ARN" --output text 2>/dev/null || true)
+if [ -n "$EXACT_ARN" ] && [ "$EXACT_ARN" != "None" ]; then
+    SECRET_ARN="$EXACT_ARN"
+    echo "  Found secret: firebolt/scheduler-credentials"
+    echo "  ARN: $SECRET_ARN"
+fi
+
+# Fallback: try CDC Lambda env vars
+if [ -z "$SECRET_ARN" ]; then
+    for FUNC_NAME in firebolt-cdc-handler firebolt-cdc-lambda firebolt_cdc_handler; do
+        ARN=$(aws lambda get-function-configuration \
+            --function-name "$FUNC_NAME" \
+            --query "Environment.Variables.FIREBOLT_SECRET_ARN" \
+            --output text 2>/dev/null || true)
+        if [ -n "$ARN" ] && [ "$ARN" != "None" ] && [ "$ARN" != "null" ]; then
+            SECRET_ARN="$ARN"
+            echo "  Found existing secret from Lambda '$FUNC_NAME'"
+            echo "  ARN: $SECRET_ARN"
+            break
+        fi
+    done
+fi
 
 if [ -z "$SECRET_ARN" ]; then
-    # Fallback: search Secrets Manager for any firebolt secret
-    SECRET_ARN=$(aws secretsmanager list-secrets \
-        --query "SecretList[?contains(Name, 'firebolt')].ARN | [0]" \
-        --output text 2>/dev/null || true)
-    if [ -n "$SECRET_ARN" ] && [ "$SECRET_ARN" != "None" ] && [ "$SECRET_ARN" != "null" ]; then
-        SECRET_NAME=$(aws secretsmanager list-secrets \
-            --query "SecretList[?contains(Name, 'firebolt')].Name | [0]" \
-            --output text 2>/dev/null || true)
-        echo "  Found existing secret in Secrets Manager: $SECRET_NAME"
-        echo "  ARN: $SECRET_ARN"
-    else
-        SECRET_ARN=""
-        echo "  No existing Firebolt secret found — will create a new one"
-        echo "  (You'll need to set credentials after deploy)"
-    fi
+    echo "  No existing Firebolt secret found — will create a new one"
+    echo "  (You'll need to set credentials after deploy)"
 fi
 
 echo "[3/7] Installing CDK CLI..."

@@ -109,8 +109,8 @@ class FireboltSchedulerStack(Stack):
         # ──────────────────────────────────────────────────────────
         existing_secret_arn = self.node.try_get_context("firebolt_secret_arn")
         if existing_secret_arn:
-            secret = secretsmanager.Secret.from_secret_complete_arn(
-                self, "FireboltCredentials", existing_secret_arn,
+            secret = secretsmanager.Secret.from_secret_name_v2(
+                self, "FireboltCredentials", "firebolt/scheduler-credentials",
             )
         else:
             secret = secretsmanager.Secret(
