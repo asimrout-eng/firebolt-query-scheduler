@@ -52,6 +52,13 @@ import json
 import time
 import logging
 
+# Firebolt SDK tries to cache tokens in $HOME which is read-only on Lambda.
+# Redirect all writable paths to /tmp before importing the SDK.
+os.environ.setdefault("HOME", "/tmp")
+os.environ.setdefault("XDG_CACHE_HOME", "/tmp")
+os.environ.setdefault("XDG_CONFIG_HOME", "/tmp")
+os.environ.setdefault("FIREBOLT_CACHE_DIR", "/tmp")
+
 import boto3
 from firebolt.db import connect as fb_connect
 from firebolt.client.auth import ClientCredentials
