@@ -1,11 +1,10 @@
+-- Stage 1: Drop existing tables
+DROP TABLE IF EXISTS fair.public.dm_lead_details;
 
-drop table dm_lead_details;
-create table fair.public.dm_lead_details as (
-with 
-tb_report as (
-select CURRENT_DATE() as report_datetime
-),
-cnd as (
+-- Stage 2: Create dm_lead_stg_cnd
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_cnd;
+
+CREATE TABLE fair.public.dm_lead_stg_cnd AS (
 select
 	id,
 	cnd_name,
@@ -14,8 +13,13 @@ select
 from
 	fair.public.cent_cnd
 where
-	deleted = 'N'),
-tb_disburse as (
+	deleted = 'N'
+);
+
+-- Stage 3: Create dm_lead_stg_disburse
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_disburse;
+
+CREATE TABLE fair.public.dm_lead_stg_disburse AS (
 select
 	loan_id as disburse_loanid,
 	MIN(TO_TIMESTAMP(payment_instrument_date::BIGINT + 19800)::DATE) AS first_disburse_date,
@@ -25,287 +29,18 @@ from
 	fair.public.cent_disbursment_payment_register cdpr
 where
 	pay_user_id not in (8888888888, 9999999999, 7777777777, 6666666666, 5555555555, 222222221)
-	and payment_status in ('Paid','Pending','pending') --,'Pending','pending'
+	and payment_status in ('Paid','Pending','pending')
 	and deleted = 'N'
 group by
 	loan_id
-),
-tb_proposal as (
-select
-	distinct cp.loan_id as proposal_loanid,
-	min(cpc_updated) over (partition by cp.loan_id) as first_proposal_date,
-	max(cpc_updated) over (partition by cp.loan_id) as last_proposal_date,
-	sum(cp_amount) over (partition by cp.loan_id) as proposal_amount,
-	case
-		when sum(case when cp.lender_uid = 1983451 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'FD'
-		when sum(case when cp.lender_uid = 4297499 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'INDMoney'
-		when sum(case when cp.lender_uid = 5046222 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'MLP'
-	else 'Non-FD'
-	end as portfolio_type
-from
-	(
-	select
-		*,
-		amount as cp_amount,
-		TO_TIMESTAMP(created)::DATE AS cp_created,
-        TO_TIMESTAMP(udated)::DATE AS cp_updated
-	from
-		fair.public.cent_proposal
-	where
-		deleted = 'N'
-		and proposal_state = '13000'
-		and is_collected = 'Y') cp
-inner join 
-	(
-	select
-		*,
-		amount as cpc_amount,
-		TO_TIMESTAMP(created)::DATE AS cpc_created,
-        TO_TIMESTAMP(udated)::DATE AS cpc_updated
-	from
-		fair.public.cent_proposal_collection
-	where
-		deleted = 'N'
-		and proposal_state = '14000'
-		and is_declined = '0') cpc on
-	CAST(cp.id AS NUMERIC(38,0))= CAST(cpc.proposal_id AS NUMERIC(38,0))
-),
-tb_cibil as (
-select
-	distinct cibil_loanid,
-	case 
-		when first_disburse_date is not null then
-			first_value(cibil_scores) over (partition by cibil_loanid
-	order by
-		disburse_date_diff rows between unbounded preceding and unbounded following)
-		else
-		first_value(cibil_scores) over (partition by cibil_loanid
-	order by
-		cibil_created
-			desc rows between unbounded preceding and unbounded following)
-	end as cibil_score,
-	case 
-		when first_disburse_date is not null then
-			first_value(cibil_created) over (partition by cibil_loanid
-	order by
-		disburse_date_diff rows between unbounded preceding and unbounded following)
-		else
-		first_value(cibil_created) over (partition by cibil_loanid
-	order by
-		cibil_created
-			desc rows between unbounded preceding and unbounded following)
-	end as cibil_score_date
-from
-	(
-	select
-		distinct loanid as cibil_loanid,
-		case
-			when cibil_score like '%0-1%' then '1'
-			when cibil_score = '000' then '0'
-			when cibil_score = '001' then '1'
-			when cibil_score = '002' then '2'
-			when cibil_score = '003' then '3'
-			when cibil_score = '004' then '4'
-			when cibil_score = '005' then '5'
-			else cibil_score
-		end as cibil_scores,
-		--to_date(timestamp 'epoch' + (created)* interval '1 second') as cibil_created,
-  		cibil_created,
-		first_disburse_date,
-		DATE_DIFF('day',
-		cibil_created,
-		first_disburse_date) as disburse_date_diff
-	from
-		(
-		select
-  			loanid,
-  			cibil_score,
-  			TO_TIMESTAMP(created)::DATE as cibil_created
-  			
-		from
-			fair.public.cent_tu_credit_information
-		where
-			loanid is not null
-			and cibil_score is not null
-			and cibil_score <> '') ctci
-	left join tb_disburse on
-		tb_disburse.disburse_loanid = ctci.loanid
-	order by
-		cibil_loanid,
-		cibil_created desc)
-where
-	disburse_date_diff >= 0
-	or disburse_date_diff is null),
-tb_crif as (
-select
-	distinct crif_loanid,
-	case
-		when first_disburse_date is not null then
-			first_value(crif_scores) over (partition by crif_loanid
-	order by
-		disburse_date_diff rows between unbounded preceding and unbounded following)
-		else
-		first_value(crif_scores) over (partition by crif_loanid
-	order by
-		crif_created
-			desc rows between unbounded preceding and unbounded following)
-	end as crif_score,
-	case
-		when first_disburse_date is not null then
-			first_value(crif_created) over (partition by crif_loanid
-	order by
-		disburse_date_diff rows between unbounded preceding and unbounded following)
-		else
-		first_value(crif_created) over (partition by crif_loanid
-	order by
-		crif_created
-			desc rows between unbounded preceding and unbounded following)
-	end as crif_score_date
-from
-	(
-	select
-		distinct loanid as crif_loanid,
-		case
-			when score like '%0-1%'	or score = '' then '0'
-			else score
-		end as crif_scores,
-		--to_date(timestamp 'epoch' + (created+19800)* interval '1 second') as crif_created,
-  		crif_created,
-		first_disburse_date,
-		DATE_DIFF('day',
-		crif_created,
-		first_disburse_date) as disburse_date_diff
-	from
-		(
-		select
-			loanid, score, 
-  			--to_date(timestamp 'epoch' + (created+19800)* interval '1 second') as crif_created
-            TO_TIMESTAMP(created + 19800)::DATE AS crif_created
-		from
-			fair.public.cent_crif_log_data
-		where
-			loanid is not null
-			and score is not null
-			and score <> '') ccld
-	left join tb_disburse on
-		tb_disburse.disburse_loanid = ccld.loanid
-	order by
-		crif_loanid,
-		crif_created desc)
-where
-	disburse_date_diff >= 0
-	or disburse_date_diff is null),
-tb_adhaar as (
-SELECT
-    adh_main.loan_id AS adhaar_loanid,
+);
 
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(name, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_name,
+-- Stage 4: Create dm_lead_stg_user_details
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_user_details;
 
-    dob AS adhaar_dob,
-    gender AS adhaar_gender,
-
-    REGEXP_REPLACE(
-        ICU_NORMALIZE(
-            TRIM(
-                IFNULL(TRIM(REGEXP_REPLACE("House_number", 'null', '')), '') || ' ' ||
-                IFNULL(TRIM(REGEXP_REPLACE(locality, 'null', '')), '') || ' ' ||
-                IFNULL(TRIM(REGEXP_REPLACE(vtc, 'null', '')), '') || ' ' ||
-                IFNULL(TRIM(REGEXP_REPLACE(sub_district, 'null', '')), '') || ' ' ||
-                IFNULL(TRIM(REGEXP_REPLACE(district, 'null', '')), '') || ' ' ||
-                IFNULL(TRIM(REGEXP_REPLACE(state, 'null', '')), '')
-            ),
-            'Any-Title'
-        ),
-        '[\n|\r]+',
-        ','
-    ) AS adhaar_fulladdress,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(state, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_state,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(district, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_district,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(sub_district, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_sub_district,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(street, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_street,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(vtc, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_vtc,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE("House_number", 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_house_number,
-
-    IFNULL(
-        ICU_NORMALIZE(
-            TRIM(REGEXP_REPLACE(locality, 'null', '')),
-            'Any-Title'
-        ),
-        ''
-    ) AS adhaar_locality,
-
-    IFNULL(
-        UPPER(TRIM(REGEXP_REPLACE(adhaar, 'null', ''))),
-        ''
-    ) AS adhaar_adhaar
-
-FROM fair.public.cent_aadhar_address_data adh_main
-inner join 
-	(
-	select
-		distinct loan_id,
-		max(id) as id
-	from
-		fair.public.cent_aadhar_address_data
-	where
-		deleted = 'N'
-	group by
-		loan_id) adh_max on
-	adh_max.id = adh_main.id
-where
-	deleted = 'N'),
-user_details as (
+CREATE TABLE fair.public.dm_lead_stg_user_details AS (
 SELECT DISTINCT
     user_email.uid AS uid_user,
-
     ICU_NORMALIZE(
         TRIM(
             CONCAT(
@@ -315,12 +50,9 @@ SELECT DISTINCT
         ),
         'Any-Title'
     ) AS name_user,
-
     user_det.mobile   AS mobile_user,
     user_det.landline AS landline_user,
-
     user_email.name AS namec_org_user,
-
     ICU_NORMALIZE(
         TRIM(
             REGEXP_REPLACE(
@@ -340,9 +72,7 @@ SELECT DISTINCT
         ),
         'Any-Title'
     ) AS namec_user,
-
     user_email.mail AS email_org_user,
-
     LOWER(
         TRIM(
             REGEXP_REPLACE(
@@ -360,14 +90,18 @@ SELECT DISTINCT
             )
         )
     ) AS email_user
-
 FROM fair.public.users user_email
 left join fair.public.cent_user user_det on
 	user_det.uid = user_email.uid
 where
 	user_det.deleted = 'N'
-	or user_det.deleted is null),
-tb_state_log as (
+	or user_det.deleted is null
+);
+
+-- Stage 5: Create dm_lead_stg_state_log
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_state_log;
+
+CREATE TABLE fair.public.dm_lead_stg_state_log AS (
 select
 	id,
 	CASE WHEN LENGTH(REGEXP_REPLACE(logged_entity_id, '\\.|''| ', '')) <= 10 THEN
@@ -377,74 +111,21 @@ select
 	old_state,
 	new_state,
 	updated_by,
-	--cast(to_timestamp(timestamp 'epoch' + (created + 19800)* interval '1 second' , 'yyyy-mm-dd hh24:mi:ss') as timestamp) as created_datetime
     TO_TIMESTAMP(created + 19800)::TIMESTAMP AS created_datetime
 from
 	fair.public.cent_state_log
 where
 	deleted = 'N'
 	and regexp_replace(logged_entity_id, '[.'' ]', '') != ''
-	and logged_entity_type in ('cent_loan','cent_vendor_borrower_varification')),
-tb_borrower_agent as (
-select
-	ba_loan_id,
-	ba_uid,
-	name_user as ba_name,
-	mobile_user as ba_mobile,
-	namec_org_user as ba_login_name,
-	namec_user as ba_login_name_clean,
-	email_org_user as ba_email_original,
-	email_user as ba_name_from_email
-from
-	(
-	select
-		distinct logged_entity_id as ba_loan_id,
-		old_state,
-		new_state,
-		updated_by as ba_uid,
-		created_datetime,
-		row_number () over (partition by logged_entity_id order by created_datetime desc,id desc) as row_ba
-	from
-		tb_state_log
-	where
-		logged_entity_type = 'cent_loan'
-		and new_state in (1050)
-		and updated_by is not null
-		and updated_by not in (0, 1)
-	order by ba_loan_id,row_ba
-	) ba
-inner join user_details on user_details.uid_user=ba.ba_uid and row_ba=1
-),
-tb_preuw_agent as (
-select
-	preuw_loan_id,
-	preuw_uid,
-	name_user as preuw_name,
-	mobile_user as preuw_mobile,
-	namec_org_user as preuw_login_name,
-	namec_user as preuw_login_name_clean,
-	email_org_user as preuw_email_original,
-	email_user as preuw_name_from_email
-from
-	(
-	select
-		distinct logged_entity_id as preuw_loan_id,
-		old_state,
-		new_state,
-		updated_by as preuw_uid,
-		created_datetime,
-		row_number () over (partition by logged_entity_id order by created_datetime desc,id desc) as row_preuw
-	from
-		tb_state_log
-	where
-		logged_entity_type = 'cent_loan'
-		and ((old_state in (1050) and new_state in (1200)) or (old_state in (1200) and new_state in (1400,1100)))
-		and updated_by is not null
-		and updated_by not in (0, 1)
-	order by preuw_loan_id,row_preuw
-	) preuw
-inner join user_details on user_details.uid_user=preuw.preuw_uid and row_preuw=1
-),
+	and logged_entity_type in ('cent_loan','cent_vendor_borrower_varification')
+);
+
+-- Stage 6: Create dm_lead_stg_uw_data
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_uw_data;
+
+CREATE TABLE fair.public.dm_lead_stg_uw_data AS (
+WITH
+tb_state_log AS (SELECT * FROM fair.public.dm_lead_stg_state_log),
 tb_uw_csl as (
 select
 	distinct logged_entity_id as uw_loan_id,
@@ -469,9 +150,6 @@ where
 		distinct uw_id
 	from
 		fair.public.dm_uw_master)
---order by
-		--created_datetime,
-		--id
 ),
 tb_uw_state as (
 select
@@ -491,68 +169,6 @@ from
 		tb_uw_csl) a
 left join fair.public.dm_uw_master dum on
 	dum.uw_id = a.uw_id
-),
-tb_rule_pass as (
-select
-	distinct loan_id as loan_id_pass,
-	created as rule_pass_date
-from
-	(
-	select
-		*,
-		row_number () over (partition by loan_id,rule_status
-	order by
-		created) as rowno
-	from
-		(
-		select
-			distinct loan_id,
-			TO_TIMESTAMP(created + 19800)::DATE as created,
-			case
-				when sum(case when status in ('REJECTED', 'Reject','REJECT') then 1 else 0 end) over (partition by loan_id,
-				TO_TIMESTAMP(created + 19800)::DATE) >0 then 'Rejected'
-				else 'Approved'
-			end as rule_status
-		from
-			fair.public.cent_loan_auto_execution_status where deleted ='N' 
-			and (action_type is null or action_type in ('Covid_3rd_wave_rule','FAIRCENT_RULE','FC_PQ_RULE_EXECUTION','FC_RULE_EXECUTION','FC_RULE_EXECUTION_STPQ','RULE_EXECUTION'))
-		order by
-			loan_id desc
-  		))
-where
-	rowno = 1
-	and rule_status = 'Approved'
-),
-tb_rule_reject as (
-select
-	distinct loan_id as loan_id_reject,
-	created as rule_reject_date
-from
-	(
-	select
-		*,
-		row_number () over (partition by loan_id,rule_status
-	order by
-		created) as rowno
-	from
-		(
-		select
-			distinct loan_id,
-			TO_TIMESTAMP(created + 19800)::DATE as created,
-			case
-				when sum(case when status in ('REJECTED', 'Reject','REJECT') then 1 else 0 end) over (partition by loan_id,
-				TO_TIMESTAMP(created + 19800)::DATE )>0 then 'Rejected'
-				else 'Approved'
-			end as rule_status
-		from
-			fair.public.cent_loan_auto_execution_status where deleted ='N'
-			and (action_type is null or action_type in ('Covid_3rd_wave_rule','FAIRCENT_RULE','FC_PQ_RULE_EXECUTION','FC_RULE_EXECUTION','FC_RULE_EXECUTION_STPQ','RULE_EXECUTION'))
-		order by
-			loan_id desc
-  		))
-where
-	rowno = 1
-	and rule_status = 'Rejected'
 ),
 tb_uwa_csl as (
 select
@@ -594,7 +210,6 @@ from
 		cl.id as uw_loan_id,
 			ccmcl.id as ccmcl_id,
 			regexp_replace(regexp_replace(ccmcl.remark, 'agent- ', ''), ' .*', '') as uw_id,
-			--to_timestamp(timestamp 'epoch' + (ccmcl.created + 19800)* interval '1 second', 'yyyy-mm-dd hh24:mi:ss') as uw_assigned_date
             TO_TIMESTAMP(ccmcl.created + 19800)::TIMESTAMP AS uw_assigned_date
 		from
 			fair.public.cent_cron_master_log ccml
@@ -629,23 +244,6 @@ left join fair.public.dm_uw_master dum on
 	dum.uw_id = a.uwas_id
 ),
 tb_uw_data as (
-/*select
-	distinct tb_loan.*,
-	IFNULL(tb_uwa_system.uwas_id,
-	tb_uw_agn.uw_id) as uw_assigned_id,
-	IFNULL(tb_uwa_system.uw_name,
-	tb_uw_agn.uw_name) as uw_assigned_name,
-	to_timestamp(IFNULL(uwas_assigned_date, IFNULL(uwac_created, created_datetime)), 'yyyy-mm-dd hh24:mi:ss') as uw_assigned_date,
-	last_day(to_date(IFNULL(uwas_assigned_date, IFNULL(uwac_created, created_datetime)), 'yyyy-mm-dd')) as uw_lastday_assigned_date,
-	uw_cancelled.uw_name as uw_cancelled,
-	to_timestamp(uw_cancelled.uw_created, 'yyyy-mm-dd hh24:mi:ss') as uw_cancelled_date,
-	uw_returned.uw_name as uw_returned,
-	to_timestamp(uw_returned.uw_created, 'yyyy-mm-dd hh24:mi:ss') as uw_returned_date,
-	uw_cs.uw_name as uw_forward_to_cs,
-	to_timestamp(uw_cs.uw_created, 'yyyy-mm-dd hh24:mi:ss') as uw_forward_to_cs_date,
-	uw_live.uw_name as uw_live,
-	to_timestamp(uw_live.uw_created, 'yyyy-mm-dd hh24:mi:ss') as uw_live_date*/
-
   SELECT DISTINCT tb_loan.*,
 IFNULL(tb_uwa_system.uwas_id, tb_uw_agn.uw_id) AS uw_assigned_id,
 IFNULL(tb_uwa_system.uw_name, tb_uw_agn.uw_name) AS uw_assigned_name,
@@ -696,7 +294,140 @@ uw_live.uw_created AS uw_live_date
 		uw_live.uw_loan_id = uwm_loan_id
 		and uw_live.new_state = 2500
 	where
-		IFNULL(tb_uwa_system.uwas_id, tb_uw_agn.uw_id) is not null),
+		IFNULL(tb_uwa_system.uwas_id, tb_uw_agn.uw_id) is not null)
+SELECT * FROM tb_uw_data
+);
+
+-- Stage 7: Create dm_lead_stg_loan_main
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_loan_main;
+
+CREATE TABLE fair.public.dm_lead_stg_loan_main AS (
+WITH
+cnd AS (SELECT * FROM fair.public.dm_lead_stg_cnd),
+tb_disburse AS (SELECT * FROM fair.public.dm_lead_stg_disburse),
+user_details AS (SELECT * FROM fair.public.dm_lead_stg_user_details),
+tb_state_log AS (SELECT * FROM fair.public.dm_lead_stg_state_log),
+tb_cibil as (
+select
+	distinct cibil_loanid,
+	case 
+		when first_disburse_date is not null then
+			first_value(cibil_scores) over (partition by cibil_loanid
+	order by
+		disburse_date_diff rows between unbounded preceding and unbounded following)
+		else
+		first_value(cibil_scores) over (partition by cibil_loanid
+	order by
+		cibil_created
+			desc rows between unbounded preceding and unbounded following)
+	end as cibil_score,
+	case 
+		when first_disburse_date is not null then
+			first_value(cibil_created) over (partition by cibil_loanid
+	order by
+		disburse_date_diff rows between unbounded preceding and unbounded following)
+		else
+		first_value(cibil_created) over (partition by cibil_loanid
+	order by
+		cibil_created
+			desc rows between unbounded preceding and unbounded following)
+	end as cibil_score_date
+from
+	(
+	select
+		distinct loanid as cibil_loanid,
+		case
+			when cibil_score like '%0-1%' then '1'
+			when cibil_score = '000' then '0'
+			when cibil_score = '001' then '1'
+			when cibil_score = '002' then '2'
+			when cibil_score = '003' then '3'
+			when cibil_score = '004' then '4'
+			when cibil_score = '005' then '5'
+			else cibil_score
+		end as cibil_scores,
+  		cibil_created,
+		first_disburse_date,
+		DATE_DIFF('day',
+		cibil_created,
+		first_disburse_date) as disburse_date_diff
+	from
+		(
+		select
+  			loanid,
+  			cibil_score,
+  			TO_TIMESTAMP(created)::DATE as cibil_created
+		from
+			fair.public.cent_tu_credit_information
+		where
+			loanid is not null
+			and cibil_score is not null
+			and cibil_score <> '') ctci
+	left join tb_disburse on
+		tb_disburse.disburse_loanid = ctci.loanid
+	order by
+		cibil_loanid,
+		cibil_created desc)
+where
+	disburse_date_diff >= 0
+	or disburse_date_diff is null),
+tb_crif as (
+select
+	distinct crif_loanid,
+	case
+		when first_disburse_date is not null then
+			first_value(crif_scores) over (partition by crif_loanid
+	order by
+		disburse_date_diff rows between unbounded preceding and unbounded following)
+		else
+		first_value(crif_scores) over (partition by crif_loanid
+	order by
+		crif_created
+			desc rows between unbounded preceding and unbounded following)
+	end as crif_score,
+	case
+		when first_disburse_date is not null then
+			first_value(crif_created) over (partition by crif_loanid
+	order by
+		disburse_date_diff rows between unbounded preceding and unbounded following)
+		else
+		first_value(crif_created) over (partition by crif_loanid
+	order by
+		crif_created
+			desc rows between unbounded preceding and unbounded following)
+	end as crif_score_date
+from
+	(
+	select
+		distinct loanid as crif_loanid,
+		case
+			when score like '%0-1%'	or score = '' then '0'
+			else score
+		end as crif_scores,
+  		crif_created,
+		first_disburse_date,
+		DATE_DIFF('day',
+		crif_created,
+		first_disburse_date) as disburse_date_diff
+	from
+		(
+		select
+			loanid, score, 
+            TO_TIMESTAMP(created + 19800)::DATE AS crif_created
+		from
+			fair.public.cent_crif_log_data
+		where
+			loanid is not null
+			and score is not null
+			and score <> '') ccld
+	left join tb_disburse on
+		tb_disburse.disburse_loanid = ccld.loanid
+	order by
+		crif_loanid,
+		crif_created desc)
+where
+	disburse_date_diff >= 0
+	or disburse_date_diff is null),
 tb_ops_remark as (
 select
 	main.loan_id as ops_loan_id,
@@ -716,8 +447,6 @@ from
 left join (
 	select
 		loan_id,
-		--listagg(distinct value1,
-		--'|') as ops_remark
     ARRAY_TO_STRING(ARRAY_AGG(DISTINCT value1), '|') AS ops_remark
 	from
 		fair.public.cent_user_additional_info
@@ -731,7 +460,6 @@ left join (
 left join (
 	select
 		loan_id,
-		--listagg(distinct IFNULL(cnd_name, value1),'|') as ops_reason
         ARRAY_TO_STRING(ARRAY_AGG(DISTINCT IFNULL(cnd_name, value1)), '|') AS ops_reason
 	from
 		fair.public.cent_user_additional_info cuai
@@ -747,54 +475,6 @@ left join (
 order by
 	main.loan_id
 ),
-tb_dsa_rm as (
-select
-	distinct value1 as partner_uid,
-	--initcap(first_value(regexp_replace(agent_name, '\\.', ' ')) over (partition by value1 order by Id desc rows between unbounded preceding and unbounded following)) as rm_dsa
-  	ICU_NORMALIZE(
-  FIRST_VALUE(
-    REGEXP_REPLACE(agent_name::text, '\\.', ' ')
-  )
-  OVER (
-    PARTITION BY value1
-    ORDER BY id DESC
-  ),
-  'Any-Title'
-) AS rm_dsa
-from
-	fair.public.cent_lead_assign_list clal
-where
-	deleted = 'N'
-	and value1 is not null
-	and value1 <> 0
-),
-tb_other_rm as (
-select
-	sources_name,
-	IFNULL(cast(rm_other_id as bigint),0) as rm_other_id,
-	IFNULL(namec_user,'') as rm_others
-from
-	(
-	select
-		distinct lower(old_source) as sources_name,
-		--initcap(first_value(assigned_to) over (partition by old_source order by id desc rows between unbounded preceding and unbounded following)) as rm_other_id
-        ICU_NORMALIZE(
-    		FIRST_VALUE(assigned_to::text)
-  			OVER (
-    		PARTITION BY old_source
-    		ORDER BY id DESC
-    		ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
-  			),
-  				'Any-Title'
-			) AS rm_other_id
-	from
-		fair.public.cent_product_source_name cpsn
-	where
-		deleted = 'N'
-		and action_type = 'BORROWER_RM_ASSIGNED'
-	) rm_other
-	left join user_details on rm_other.rm_other_id::text=user_details.uid_user::text
-),
 tb_ref as (
 select
 	*,
@@ -805,8 +485,6 @@ from
 	(
 	select
 			distinct loan_id as ref_loan_id,
-			--initcap(IFNULL(value1, '')) as ref_name,
-			--initcap(IFNULL(value2, '')) as ref_contact
   			ICU_NORMALIZE(IFNULL(value1, ''), 'Any-Title') AS ref_name,
 			ICU_NORMALIZE(IFNULL(value2, ''), 'Any-Title') AS ref_contact
 	from
@@ -816,30 +494,14 @@ from
 		and deleted = 'N'
 		order by ref_loan_id,ref_name,ref_contact)
 ),
-tb_ref1 as (
-select * from tb_ref where rowcount = 1
-),
-tb_ref2 as (
-select * from tb_ref where rowcount = 2
-),
-tb_ref3 as (
-select * from tb_ref where rowcount = 3
-),
-tb_ref4 as (
-select * from tb_ref where rowcount = 4
-),
-tb_ref5 as (
-select * from tb_ref where rowcount = 5
-),
-tb_ref6 as (
-select * from tb_ref where rowcount = 6
-),
-tb_ref7 as (
-select * from tb_ref where rowcount = 7
-),
-tb_ref8 as (
-select * from tb_ref where rowcount = 8
-),
+tb_ref1 as (select * from tb_ref where rowcount = 1),
+tb_ref2 as (select * from tb_ref where rowcount = 2),
+tb_ref3 as (select * from tb_ref where rowcount = 3),
+tb_ref4 as (select * from tb_ref where rowcount = 4),
+tb_ref5 as (select * from tb_ref where rowcount = 5),
+tb_ref6 as (select * from tb_ref where rowcount = 6),
+tb_ref7 as (select * from tb_ref where rowcount = 7),
+tb_ref8 as (select * from tb_ref where rowcount = 8),
 tb_ref_contact as (
 select
 	distinct tb_ref.ref_loan_id,
@@ -861,22 +523,14 @@ select
 	tb_ref8.ref_contact as ref_contact_7
 from
 	tb_ref
-left join tb_ref1 on
-	tb_ref1.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref2 on
-	tb_ref2.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref3 on
-	tb_ref3.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref4 on
-	tb_ref4.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref5 on
-	tb_ref5.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref6 on
-	tb_ref6.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref7 on
-	tb_ref7.ref_loan_id = tb_ref.ref_loan_id
-left join tb_ref8 on
-	tb_ref8.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref1 on tb_ref1.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref2 on tb_ref2.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref3 on tb_ref3.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref4 on tb_ref4.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref5 on tb_ref5.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref6 on tb_ref6.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref7 on tb_ref7.ref_loan_id = tb_ref.ref_loan_id
+left join tb_ref8 on tb_ref8.ref_loan_id = tb_ref.ref_loan_id
 ),
 tb_permanent as (
 select
@@ -888,9 +542,6 @@ from
 	(
 	select
 		distinct loan_id as perm_loan_id,
-		--initcap(IFNULL(value1, '')) as perm_address,
-		--initcap(IFNULL(value2, '')) as perm_contact1,
-		--initcap(IFNULL(value3, '')) as perm_contact2
   		ICU_NORMALIZE(IFNULL(value1, ''), 'Any-Title') AS perm_address,
         ICU_NORMALIZE(IFNULL(value2, ''), 'Any-Title') AS perm_contact1,
         ICU_NORMALIZE(IFNULL(value3, ''), 'Any-Title') AS perm_contact2
@@ -910,24 +561,9 @@ select
 	perm2.perm_contact2 as permannent_contact1_1
 from
 	tb_permanent
-left join 
-	(
-	select
-		*
-	from
-		tb_permanent
-	where
-		rowcount = 1
-	) perm1 on
+left join (select * from tb_permanent where rowcount = 1) perm1 on
 	perm1.perm_loan_id = tb_permanent.perm_loan_id
-left join (
-	select
-		*
-	from
-		tb_permanent
-	where
-		rowcount = 2
-	) perm2 on
+left join (select * from tb_permanent where rowcount = 2) perm2 on
 	perm2.perm_loan_id = tb_permanent.perm_loan_id
 ),
 loan_main as (
@@ -985,11 +621,6 @@ from
 			from
 				cnd
 			where
-			--cast(id as varchar)= regexp_substr(cl1.loan_city,
-				--'[0-9]+')
-				--and (cnd_group in ('LOAN_CITY', 'STATE_PIN', 'STATE_INDIA', 'CORONA_CITY')
-					--or cnd_code = 'INDIA_CITY')
-				--and deleted = 'N') is not null then
   			CAST(id AS TEXT) = REGEXP_EXTRACT(cl1.loan_city, '[0-9]+')
             AND (cnd_group IN ('LOAN_CITY', 'STATE_PIN', 'STATE_INDIA', 'CORONA_CITY')
             OR cnd_code = 'INDIA_CITY')
@@ -1000,11 +631,6 @@ from
 			from
 				cnd
 			where
-				--cast(id as varchar)= regexp_substr(cl1.loan_city,
-				--'[0-9]+')
-				--and (cnd_group in ('LOAN_CITY', 'STATE_PIN', 'STATE_INDIA', 'CORONA_CITY')
-					--or cnd_code = 'INDIA_CITY')
-				--and deleted = 'N')
   			CAST(id AS TEXT) = REGEXP_EXTRACT(cl1.loan_city, '[0-9]+')
             AND (cnd_group IN ('LOAN_CITY', 'STATE_PIN', 'STATE_INDIA', 'CORONA_CITY')
             OR cnd_code = 'INDIA_CITY')
@@ -1079,14 +705,8 @@ from
 		product_tag,
 		emi_month,
 		emi_year,
-		--to_date(timestamp 'epoch' + (created + 19800)* interval '1 second', 'yyyy-mm-dd') as cl_created,
-		--to_date(timestamp 'epoch' + (udated + 19800)* interval '1 second', 'yyyy-mm-dd') as cl_updated,
   		TO_TIMESTAMP(created + 19800)::DATE AS cl_created,
         TO_TIMESTAMP(udated + 19800)::DATE AS cl_updated,
-		--case
-			--when live_date != 0 then
-				--to_date(timestamp 'epoch' + (live_date + 19800)* interval '1 second', 'yyyy-mm-dd')
-		--end as cl_livedate,
   		CASE
         WHEN live_date != 0 THEN
         	TO_TIMESTAMP(live_date + 19800)::DATE
@@ -1095,12 +715,10 @@ from
 		pd_status
 	from
 		fair.public.cent_loan_dedup cl1
---	and id =1003937261
 	) cl
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as loan_currentstate,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') AS loan_currentstate,
 		cnd_code as cndcode_lstate
 	from
@@ -1123,7 +741,6 @@ left join
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as loan_type,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') AS loan_type,
 		id as id_ltype
 	from
@@ -1168,7 +785,6 @@ WHERE
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as loan_subtype,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') as loan_subtype,
 		id as id_lsubtype
 	from
@@ -1200,7 +816,17 @@ left join tb_perm_contact on
 	perm_loan_id = cl.id
 left join tb_ref_contact on
 	tb_ref_contact.ref_loan_id = cl.id
-),
+)
+SELECT * FROM loan_main
+);
+
+-- Stage 8: Create dm_lead_stg_user_main
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_user_main;
+
+CREATE TABLE fair.public.dm_lead_stg_user_main AS (
+WITH
+cnd AS (SELECT * FROM fair.public.dm_lead_stg_cnd),
+user_details AS (SELECT * FROM fair.public.dm_lead_stg_user_details),
 user_main as (
 select
 	*,
@@ -1288,7 +914,6 @@ on
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as religion,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') as religion,
 		id as id_religion
 	from
@@ -1300,7 +925,6 @@ left join
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as caste,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') as caste,
 		id as id_caste
 	from
@@ -1364,7 +988,6 @@ left join
 left join 
 	(
 	select
-		--initcap(trim(IFNULL(cnd_name, 'unknown'))) as mothertounge,
   		ICU_NORMALIZE(TRIM(IFNULL(cnd_name, 'unknown')), 'Any-Title') as mothertounge,
 		id as id_mothertounge
 	from
@@ -1373,6 +996,104 @@ left join
 		cnd_group = 'INDIA_MOTHERTONGUE'
 	) mothertounge_cnd on
 	mothertounge_cnd.id_mothertounge = cent_user.mothertounge_cnd
+)
+SELECT * FROM user_main
+);
+
+-- Stage 9: Create dm_lead_stg_finalresult
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_finalresult;
+
+CREATE TABLE fair.public.dm_lead_stg_finalresult AS (
+WITH
+loan_main AS (SELECT * FROM fair.public.dm_lead_stg_loan_main),
+user_main AS (SELECT * FROM fair.public.dm_lead_stg_user_main),
+cnd AS (SELECT * FROM fair.public.dm_lead_stg_cnd),
+tb_disburse AS (SELECT * FROM fair.public.dm_lead_stg_disburse),
+user_details AS (SELECT * FROM fair.public.dm_lead_stg_user_details),
+tb_uw_data AS (SELECT * FROM fair.public.dm_lead_stg_uw_data),
+tb_adhaar as (
+SELECT
+    adh_main.loan_id AS adhaar_loanid,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(name, 'null', '')), 'Any-Title'), '') AS adhaar_name,
+    dob AS adhaar_dob,
+    gender AS adhaar_gender,
+    REGEXP_REPLACE(
+        ICU_NORMALIZE(
+            TRIM(
+                IFNULL(TRIM(REGEXP_REPLACE("House_number", 'null', '')), '') || ' ' ||
+                IFNULL(TRIM(REGEXP_REPLACE(locality, 'null', '')), '') || ' ' ||
+                IFNULL(TRIM(REGEXP_REPLACE(vtc, 'null', '')), '') || ' ' ||
+                IFNULL(TRIM(REGEXP_REPLACE(sub_district, 'null', '')), '') || ' ' ||
+                IFNULL(TRIM(REGEXP_REPLACE(district, 'null', '')), '') || ' ' ||
+                IFNULL(TRIM(REGEXP_REPLACE(state, 'null', '')), '')
+            ),
+            'Any-Title'
+        ),
+        '[\n|\r]+',
+        ','
+    ) AS adhaar_fulladdress,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(state, 'null', '')), 'Any-Title'), '') AS adhaar_state,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(district, 'null', '')), 'Any-Title'), '') AS adhaar_district,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(sub_district, 'null', '')), 'Any-Title'), '') AS adhaar_sub_district,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(street, 'null', '')), 'Any-Title'), '') AS adhaar_street,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(vtc, 'null', '')), 'Any-Title'), '') AS adhaar_vtc,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE("House_number", 'null', '')), 'Any-Title'), '') AS adhaar_house_number,
+    IFNULL(ICU_NORMALIZE(TRIM(REGEXP_REPLACE(locality, 'null', '')), 'Any-Title'), '') AS adhaar_locality,
+    IFNULL(UPPER(TRIM(REGEXP_REPLACE(adhaar, 'null', ''))), '') AS adhaar_adhaar
+FROM fair.public.cent_aadhar_address_data adh_main
+inner join 
+	(
+	select
+		distinct loan_id,
+		max(id) as id
+	from
+		fair.public.cent_aadhar_address_data
+	where
+		deleted = 'N'
+	group by
+		loan_id) adh_max on
+	adh_max.id = adh_main.id
+where
+	deleted = 'N'),
+tb_proposal as (
+select
+	distinct cp.loan_id as proposal_loanid,
+	min(cpc_updated) over (partition by cp.loan_id) as first_proposal_date,
+	max(cpc_updated) over (partition by cp.loan_id) as last_proposal_date,
+	sum(cp_amount) over (partition by cp.loan_id) as proposal_amount,
+	case
+		when sum(case when cp.lender_uid = 1983451 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'FD'
+		when sum(case when cp.lender_uid = 4297499 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'INDMoney'
+		when sum(case when cp.lender_uid = 5046222 then 1 else 0 end) over (partition by cp.loan_id)>0 then 'MLP'
+	else 'Non-FD'
+	end as portfolio_type
+from
+	(
+	select
+		*,
+		amount as cp_amount,
+		TO_TIMESTAMP(created)::DATE AS cp_created,
+        TO_TIMESTAMP(udated)::DATE AS cp_updated
+	from
+		fair.public.cent_proposal
+	where
+		deleted = 'N'
+		and proposal_state = '13000'
+		and is_collected = 'Y') cp
+inner join 
+	(
+	select
+		*,
+		amount as cpc_amount,
+		TO_TIMESTAMP(created)::DATE AS cpc_created,
+        TO_TIMESTAMP(udated)::DATE AS cpc_updated
+	from
+		fair.public.cent_proposal_collection
+	where
+		deleted = 'N'
+		and proposal_state = '14000'
+		and is_declined = '0') cpc on
+	CAST(cp.id AS NUMERIC(38,0))= CAST(cpc.proposal_id AS NUMERIC(38,0))
 ),
 tb_banking as MATERIALIZED (
 SELECT
@@ -1445,10 +1166,8 @@ select
 		when cld.residence_type_cnd = 2 then 'Self Owned'
 		when cld.residence_type_cnd = 3 then 'Owned By Parent Or Sibling'
 		when cld.residence_type_cnd = 4 then 'Relatives'
-		--else initcap(IFNULL(cnd_name, 'Unknown'))
   		else ICU_NORMALIZE(IFNULL(cnd_name, 'unknown'), 'Any-Title')
 	end as residence_type,
-	--to_date(timestamp 'epoch' + (cast(residence_shifting_date as bigINT)+ 19800)* interval '1 second', 'yyyy-mm-dd') as residence_shifting_date,
   	TO_TIMESTAMP(CAST(residence_shifting_date AS BIGINT) + 19800)::DATE AS residence_shifting_date,
 	field1,
 	dept,
@@ -1480,22 +1199,16 @@ where
 loan_employment as MATERIALIZED(
 select
 	distinct uid_employmentid,
-	--initcap(trim(IFNULL(employement_type, 'unknown'))) as employement_type,
   	ICU_NORMALIZE(TRIM(IFNULL(employement_type, 'unknown')), 'Any-Title') AS employement_type,
 	is_current,
-	--initcap(trim(IFNULL(comp_designation, ''))) as comp_designation,
   	ICU_NORMALIZE(TRIM(IFNULL(comp_designation, 'unknown')), 'Any-Title') as comp_designation,
-	--initcap(trim(IFNULL(comp_name, ''))) as comp_name,
   	ICU_NORMALIZE(TRIM(IFNULL(comp_name, 'unknown')), 'Any-Title') as comp_name,
-	--regexp_replace(initcap(trim(IFNULL(comp_address, ''))), '[\n\r]+', ',') as comp_address,
   	REGEXP_REPLACE(
   	ICU_NORMALIZE(TRIM(IFNULL(comp_address, '')), 'Any-Title'),
   	'[\n\r]+',
   	','
 		) AS comp_address,
-	--initcap(trim(IFNULL(comp_city, ''))) as comp_city,
   	ICU_NORMALIZE(TRIM(IFNULL(comp_city, 'unknown')), 'Any-Title') as comp_city,
-	--initcap(trim(IFNULL(comp_state, ''))) as comp_state,
   	ICU_NORMALIZE(TRIM(IFNULL(comp_state, 'unknown')), 'Any-Title') as comp_state,
 	comp_tenure,
 	comp_pin,
@@ -1523,24 +1236,18 @@ CASE
   WHEN ICU_NORMALIZE(TRIM(IFNULL(office_type, '')), 'Any-Title') = 'Null' THEN ''
   ELSE ICU_NORMALIZE(TRIM(IFNULL(office_type, '')), 'Any-Title')
 END AS comp_officetype,
-
 no_of_employee AS comp_noofemployee,
 company_turnover AS comp_turnover,
 comp_registration_no AS comp_registrationno,
 contact2 AS comp_contactno2,
-
 ICU_NORMALIZE(TRIM(IFNULL(nature_of_business, '')), 'Any-Title') AS comp_natureofbusiness,
-
 CASE
   WHEN ICU_NORMALIZE(TRIM(IFNULL(industry_type, '')), 'Any-Title') = '60' THEN 'Other'
   ELSE ICU_NORMALIZE(TRIM(IFNULL(industry_type, '')), 'Any-Title')
 END AS comp_industrytype,
-
 ICU_NORMALIZE(TRIM(IFNULL(sub_industry_type, '')), 'Any-Title') AS comp_subindustrytype,
-
 caution_profile,
 business_cash_component AS comp_cashcomponent
-
 from
 	(
 	select
@@ -1609,14 +1316,10 @@ from
 				comp_name,
 				comp_address,
 				comp_tenure,
-				--regexp_substr(comp_pin,
-				--'[0-9]+') as comp_pin,
   				REGEXP_EXTRACT(comp_pin, '[0-9]+') AS comp_pin,
 				comp_phone,
 				comp_email,
 				comp_website,
-				--to_date(timestamp 'epoch' + (case when comp_start = '' or lower(comp_start)='nan' or lower(comp_start)='null' then null when comp_start = '6309528114600' then 1577491200 else cast(comp_start as bigint) end + 19800)* interval '1 second', 'yyyy-mm-dd') as comp_start_date,
-				--to_date(timestamp 'epoch' + (case when comp_end = '' then null else cast(comp_end as bigint) end + 19800)* interval '1 second', 'yyyy-mm-dd') as comp_end_date ,
   				TO_TIMESTAMP(
    					 CASE 
         				WHEN comp_start = '' OR LOWER(comp_start) = 'nan' OR LOWER(comp_start) = 'null' THEN NULL 
@@ -1737,20 +1440,12 @@ tb_nach AS (
                 branch_name AS nach_branch,
                 account_no AS nach_accountno,
                 unique_reference_no,
-                CASE
-    WHEN account_type = '10' THEN 'Saving'
-    ELSE 'Current'
-END AS nach_account_type,
+                CASE WHEN account_type = '10' THEN 'Saving' ELSE 'Current' END AS nach_account_type,
 CASE  
-    -- Specific bad data cases FIRST
     WHEN startdate = '050102017' THEN TO_DATE('05102017', 'DDMMYYYY')
-    
-    -- Filter out empty or invalid patterns
     WHEN REGEXP_REPLACE(startdate, '[^0-9]', '') = '' THEN NULL
     WHEN REGEXP_REPLACE(startdate, '[^0-9]', '') IS NULL THEN NULL
-    WHEN REGEXP_REPLACE(startdate, '[^0-9]', '') LIKE '00%' THEN NULL  -- Invalid day 00
-    
-    -- Length 7 (DMMYYYY format)
+    WHEN REGEXP_REPLACE(startdate, '[^0-9]', '') LIKE '00%' THEN NULL
     WHEN LENGTH(REGEXP_REPLACE(startdate, '[^0-9]', '')) = 7 THEN 
         CASE
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2) != ''
@@ -1760,23 +1455,16 @@ CASE
             THEN TO_DATE(REGEXP_REPLACE(startdate, '[^0-9]', ''), 'DMMYYYY')
             ELSE NULL
         END
-    
-    -- Length 8 (DDMMYYYY format) with comprehensive validation
     WHEN LENGTH(REGEXP_REPLACE(startdate, '[^0-9]', '')) = 8 THEN 
         CASE
-            -- Check for empty substrings before casting
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2) = '' THEN NULL
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 1, 2) = '' THEN NULL
-            -- Basic range checks
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2)::INT NOT BETWEEN 1 AND 12 THEN NULL
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 1, 2)::INT NOT BETWEEN 1 AND 31 THEN NULL
-            -- Day 31 in months with only 30 days (Feb, Apr, Jun, Sep, Nov)
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 1, 2)::INT = 31 
                 AND SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2)::INT IN (2, 4, 6, 9, 11) THEN NULL
-            -- Day 30 or 31 in February
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 1, 2)::INT >= 30 
                 AND SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2)::INT = 2 THEN NULL
-            -- Feb 29 in non-leap years
             WHEN SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 1, 2)::INT = 29 
                 AND SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 3, 2)::INT = 2
                 AND SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 5, 4)::INT % 4 != 0 THEN NULL
@@ -1786,70 +1474,50 @@ CASE
                 AND SUBSTRING(REGEXP_REPLACE(startdate, '[^0-9]', ''), 5, 4)::INT % 400 != 0 THEN NULL
             ELSE TO_DATE(REGEXP_REPLACE(startdate, '[^0-9]', ''), 'DDMMYYYY')
         END
-    
-    -- Length 10 (Unix epoch)
     WHEN LENGTH(REGEXP_REPLACE(startdate, '[^0-9]', '')) = 10 THEN 
         TO_TIMESTAMP(REGEXP_REPLACE(startdate, '[^0-9]', '')::BIGINT + 19800)::DATE
-    
-    -- Note: Removed >= 5 AND <= 8 to avoid catching invalid lengths 5, 6
     ELSE NULL
 END AS start_date,
 CASE  
-    -- Specific bad data cases FIRST
     WHEN enddate = '3101201' THEN TO_DATE('31012021', 'DDMMYYYY')
     WHEN enddate = '3107022' THEN TO_DATE('31072022', 'DDMMYYYY')
     WHEN enddate = '3108022' THEN TO_DATE('31082022', 'DDMMYYYY')
     WHEN enddate = '3122018' THEN TO_DATE('03122018', 'DDMMYYYY')
     WHEN enddate = '3009202' THEN TO_DATE('30092022', 'DDMMYYYY')
-    
-    -- Filter out empty
     WHEN REGEXP_REPLACE(enddate, '-|/', '') = '' THEN NULL
     WHEN REGEXP_REPLACE(enddate, '-|/', '') IS NULL THEN NULL
-    
-    -- Length 7 (DMMYYYY format) - Pad to 8 digits (DDMMYYYY) since Firebolt doesn't support 'D'
     WHEN LENGTH(REGEXP_REPLACE(enddate, '-|/', '')) = 7 THEN 
         CASE
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2) != ''
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2)::INT BETWEEN 1 AND 12
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2) != ''
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2)::INT BETWEEN 1 AND 31
-            THEN TO_DATE('0' || REGEXP_REPLACE(enddate, '-|/', ''), 'DDMMYYYY')  -- Pad with leading zero
+            THEN TO_DATE('0' || REGEXP_REPLACE(enddate, '-|/', ''), 'DDMMYYYY')
             ELSE NULL
         END
-    
-    -- Length 8 (DDMMYYYY format) with comprehensive validation
     WHEN LENGTH(REGEXP_REPLACE(enddate, '-|/', '')) = 8 THEN 
         CASE
-            -- Check for empty substrings before casting
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2) = '' THEN NULL
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2) = '' THEN NULL
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4) = '' THEN NULL
-            -- Basic range checks
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2)::INT NOT BETWEEN 1 AND 12 THEN NULL
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2)::INT NOT BETWEEN 1 AND 31 THEN NULL
-            -- Day 31 in months with only 30 days (Feb, Apr, Jun, Sep, Nov)
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2)::INT = 31 
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2)::INT IN (2, 4, 6, 9, 11) THEN NULL
-            -- Day 30 or 31 in February
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2)::INT >= 30 
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2)::INT = 2 THEN NULL
-            -- Feb 29 validation - exclude if not a leap year
             WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 1, 2)::INT = 29 
                 AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 3, 2)::INT = 2 THEN
                 CASE
-                    -- Check if leap year: divisible by 4, but century years must be divisible by 400
-                    WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4)::INT % 4 != 0 THEN NULL  -- Not divisible by 4
+                    WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4)::INT % 4 != 0 THEN NULL
                     WHEN SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4)::INT % 100 = 0 
-                        AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4)::INT % 400 != 0 THEN NULL  -- Century year not divisible by 400
+                        AND SUBSTRING(REGEXP_REPLACE(enddate, '-|/', ''), 5, 4)::INT % 400 != 0 THEN NULL
                     ELSE TO_DATE(REGEXP_REPLACE(enddate, '-|/', ''), 'DDMMYYYY')
                 END
             ELSE TO_DATE(REGEXP_REPLACE(enddate, '-|/', ''), 'DDMMYYYY')
         END
-    
-    -- Length 10 (Unix epoch)
     WHEN LENGTH(REGEXP_REPLACE(enddate, '-|/', '')) = 10 THEN 
         TO_TIMESTAMP(REGEXP_REPLACE(enddate, '-|/', '')::BIGINT + 19800)::DATE
-    
     ELSE NULL
 END AS end_date,
                 micr AS nach_micr,
@@ -1906,7 +1574,6 @@ select
 	mandate_id as icici_mandate_id,
 	status as icici_mandate_status,
 	reason as icici_mandate_reason,
-	--to_date(timestamp 'epoch' + (created)* interval '1 second', 'yyyy-mm-dd') as icici_mandate_created
   	TO_TIMESTAMP(created)::DATE AS icici_mandate_created
 from
 	fair.public.cent_icici_mandate_register cimr
@@ -1940,7 +1607,6 @@ select
 	cf_status,
 	bank_holder_name,
 	account_no,
-	--to_date(timestamp 'epoch' + (created)* interval '1 second', 'yyyy-mm-dd') as link_created_date
   	TO_TIMESTAMP(created)::DATE AS link_created_date
 from
 	fair.public.cent_cashfree_subscription
@@ -2034,10 +1700,6 @@ from
 		branch_add,
 		bank_name,
 		micr_number,
-		--to_timestamp (timestamp 'epoch' + (created)* interval '1 second',
-		--'yyyy-mm-dd hh24:mi:ss') as create1,
-		--to_timestamp (timestamp 'epoch' + (udated)* interval '1 second',
-		--'yyyy-mm-dd hh24:mi:ss') as udate,
   		TO_TIMESTAMP(created) AS create1,
 		TO_TIMESTAMP(udated) AS udate,
 		row_number () over (partition by uid
@@ -2100,7 +1762,6 @@ from
 				when value1 in ('90135099') then 'Stability'
 				when value1 in ('90157884') then 'Stressed Sector'
 			end as Short_description,
-			--to_date(timestamp 'epoch' + (created)* interval '1 second', 'yyyy-mm-dd') as dev_created,
   			TO_TIMESTAMP(created)::DATE AS dev_created,
 			created_by,
 			namec_user as dev_created_by
@@ -2122,8 +1783,6 @@ left join
 	(
 	select
 		user_main.uid as uid_reference,
-		--initcap(trim(concat(IFNULL(fname, ''), concat(' ', IFNULL(lname, ''))))) as name_reference,
-		--initcap(trim(IFNULL(fname, ''))) as first_name_reference,
   		ICU_NORMALIZE(
   		TRIM(CONCAT(IFNULL(fname, ''), CONCAT(' ', IFNULL(lname, '')))),
   		'Any-Title'
@@ -2190,13 +1849,82 @@ left join tb_uw_data on
 	uwm_loan_id = loan_main.id
 left join tb_proposal on 
 	tb_proposal.proposal_loanid= loan_main.id
+)
+SELECT * FROM loan_finalresult
+);
+
+-- Stage 10: Create dm_lead_stg_lead
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_lead;
+
+CREATE TABLE fair.public.dm_lead_stg_lead AS (
+WITH
+loan_finalresult AS (SELECT * FROM fair.public.dm_lead_stg_finalresult),
+tb_state_log AS (SELECT * FROM fair.public.dm_lead_stg_state_log),
+tb_rule_pass as (
+select
+	distinct loan_id as loan_id_pass,
+	created as rule_pass_date
+from
+	(
+	select
+		*,
+		row_number () over (partition by loan_id,rule_status
+	order by
+		created) as rowno
+	from
+		(
+		select
+			distinct loan_id,
+			TO_TIMESTAMP(created + 19800)::DATE as created,
+			case
+				when sum(case when status in ('REJECTED', 'Reject','REJECT') then 1 else 0 end) over (partition by loan_id,
+				TO_TIMESTAMP(created + 19800)::DATE) >0 then 'Rejected'
+				else 'Approved'
+			end as rule_status
+		from
+			fair.public.cent_loan_auto_execution_status where deleted ='N' 
+			and (action_type is null or action_type in ('Covid_3rd_wave_rule','FAIRCENT_RULE','FC_PQ_RULE_EXECUTION','FC_RULE_EXECUTION','FC_RULE_EXECUTION_STPQ','RULE_EXECUTION'))
+		order by
+			loan_id desc
+  		))
+where
+	rowno = 1
+	and rule_status = 'Approved'
+),
+tb_rule_reject as (
+select
+	distinct loan_id as loan_id_reject,
+	created as rule_reject_date
+from
+	(
+	select
+		*,
+		row_number () over (partition by loan_id,rule_status
+	order by
+		created) as rowno
+	from
+		(
+		select
+			distinct loan_id,
+			TO_TIMESTAMP(created + 19800)::DATE as created,
+			case
+				when sum(case when status in ('REJECTED', 'Reject','REJECT') then 1 else 0 end) over (partition by loan_id,
+				TO_TIMESTAMP(created + 19800)::DATE )>0 then 'Rejected'
+				else 'Approved'
+			end as rule_status
+		from
+			fair.public.cent_loan_auto_execution_status where deleted ='N'
+			and (action_type is null or action_type in ('Covid_3rd_wave_rule','FAIRCENT_RULE','FC_PQ_RULE_EXECUTION','FC_RULE_EXECUTION','FC_RULE_EXECUTION_STPQ','RULE_EXECUTION'))
+		order by
+			loan_id desc
+  		))
+where
+	rowno = 1
+	and rule_status = 'Rejected'
 ),
 tb_lead as MATERIALIZED (
 select
 	distinct id as loan_id,
-	--initcap(IFNULL(loan_type, 'Others')) as loan_type,
-	--initcap(IFNULL(loan_subtype, 'Others')) as loan_subtype,
-	--initcap(IFNULL(other_loan_type, 'Others')) as loan_othertype,
 	Upper(IFNULL(product_type, 'Others')) as product_type,
   	ICU_NORMALIZE(IFNULL(loan_type, 'Others'), 'Any-Title')       AS loan_type,
 	ICU_NORMALIZE(IFNULL(loan_subtype, 'Others'), 'Any-Title')    AS loan_subtype,
@@ -2215,28 +1943,21 @@ select
 	end as portfolio_type, 
 	loan_desc,
 	uid_loan as user_id,
-	--case when rule_pass_date>=created_loan and (rule_pass_date<=livec_date or livec_date is null) then 1 end as rule_pass,
-	--case when rule_pass_date::text>=created_loan::text and (rule_pass_date<=livec_date or livec_date is null) then rule_pass_date end as rule_pass_date,
-	--case when rule_reject_date::text>=created_loan::text and (rule_reject_date<=livec_date or livec_date is null) then 1 end as rule_reject,
-	--case when rule_reject_date::text>=created_loan::text and (rule_reject_date<=livec_date or livec_date is null) then rule_reject_date end as rule_reject_date,
   CASE
   WHEN rule_pass_date >= TO_TIMESTAMP(created_loan + 19800)::DATE
    AND (rule_pass_date <= livec_date OR livec_date IS NULL)
   THEN 1
 END AS rule_pass,
-
 CASE
   WHEN rule_pass_date >= TO_TIMESTAMP(created_loan + 19800)::DATE
    AND (rule_pass_date <= livec_date OR livec_date IS NULL)
   THEN rule_pass_date
 END AS rule_pass_date,
-
 CASE
   WHEN rule_reject_date >= TO_TIMESTAMP(created_loan + 19800)::DATE
    AND (rule_reject_date <= livec_date OR livec_date IS NULL)
   THEN 1
 END AS rule_reject,
-
 CASE
   WHEN rule_reject_date >= TO_TIMESTAMP(created_loan + 19800)::DATE
    AND (rule_reject_date <= livec_date OR livec_date IS NULL)
@@ -2248,17 +1969,14 @@ END AS rule_reject_date,
 	livec_date as actual_live_date,
 	rfd_date,
 	first_proposal_date,
-	--to_date(first_proposal_date,'yyyy-mm') as first_proposal_month,
   	DATE_TRUNC('month', first_proposal_date)::DATE AS first_proposal_month,
 	last_proposal_date,
-	--to_date(last_proposal_date,'yyyy-mm') as last_proposal_month,
   	DATE_TRUNC('month', last_proposal_date)::DATE AS last_proposal_month,
 	proposal_amount,
 	IFNULL(first_disburse_date,first_proposal_date) as first_disburse_date,
 	IFNULL(DATE_TRUNC('month', first_disburse_date)::DATE, DATE_TRUNC('month', first_proposal_date)::DATE) AS first_disburse_month,
     IFNULL(last_disburse_date, last_proposal_date) AS last_disburse_date,
   	IFNULL(DATE_TRUNC('month', last_disburse_date)::DATE, DATE_TRUNC('month', last_proposal_date)::DATE) AS last_disburse_month,
-	--IFNULL(disburse_amount::numeric(38,0),proposal_amount::numeric(38,0)) as disburse_amount,
   	COALESCE(
   CAST(disburse_amount AS NUMERIC(38, 2)),
   CAST(proposal_amount AS NUMERIC(38, 2))
@@ -2292,7 +2010,6 @@ END AS rule_reject_date,
 	case
 		when loan_city = '90047195' then 'Bangalore'
 	else
-		--initcap(trim(IFNULL(loan_city, '')))
   		ICU_NORMALIZE(TRIM(IFNULL(loan_city, '')), 'Any-Title')
 	end as loan_city,
 	verified_personal,
@@ -2310,7 +2027,6 @@ END AS rule_reject_date,
 	total_settlement_amount,
 	settlement_term,
 	product_tag,
-	--initcap(trim(concat(IFNULL(fname, ''), concat(' ', IFNULL(lname, ''))))) as user_name,
   	ICU_NORMALIZE(
   TRIM(CONCAT(IFNULL(fname, ''), CONCAT(' ', IFNULL(lname, '')))),
   'Any-Title'
@@ -2318,8 +2034,6 @@ END AS rule_reject_date,
 	fname as user_fname,
 	lname as user_lname,
 	pan,
-	--regexp_substr(UPPER(TRIM(right(trim(regexp_replace(lower(pan), '-individdual|-individual|fc_invalid_fc_invalid_|fc_reapply_fc_reapply_|fc_invalid_fc_inalid_|fc_invalid_invalid _|fc_invalid_invalid_|lockdown_invalid_|invalid_faircent_|fc_invalid_valid_|fc_closedtopup_|fc_invalid_1_|fc_invalid__|closed_loan_|_ invalid no|fc_closed_1_|fc_closed_5_|fc_invalid1_|fc_invalid_|fc_invalid1|fc_closed1_|_invalid no|_individual|fc_closed2_|fc_reapply_|in_valid _|fc_closed_|_duplicate|fc_invaid_|in_valid_|_invallid|fc_close_|invalid_|_invalid|top_up_|invali_|closed_|inalid_|topup_|_inv|top_|fc_|invalid|invild|-invld|invailid|_test|test', '')), 10))),
-	--'[A-Z][A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][A-Z]') as user_pan,
   	REGEXP_EXTRACT(
   UPPER(
     TRIM(
@@ -2357,7 +2071,6 @@ END AS rule_reject_date,
 			and round(DATE_DIFF('day', cu_dob, cl_created)/ 365, 1) <= 73 then 'Boomers(55-73)'
 		when round(DATE_DIFF('day', cu_dob, cl_created)/ 365, 1) is null then 'Unknown'
 	end as generations,
-	--regexp_replace(regexp_replace(initcap(trim(IFNULL(address, '')|| ' ' || IFNULL(add, '')|| ' ' || IFNULL(add2, '')|| ' ' || IFNULL(landmark, ''))), '[\n|\r]+', ','),'  +',' ') as user_fulladdress,
   	REGEXP_REPLACE(
   REGEXP_REPLACE(
     ICU_NORMALIZE(
@@ -2477,9 +2190,7 @@ END AS rule_reject_date,
          10
        )
 END AS bor_mobile,
-
 landline AS user_landline,
-
 CASE
   WHEN LENGTH(
          SUBSTRING(
@@ -2622,33 +2333,6 @@ END AS bor_landline,
 	IFNULL(gender,'Unknown') as gender,
 	reg_step,
 	source,
-	/*case 
-		when user_agent_name='Fcpartner_Openbank' then 'Aggregator'
-		when user_agent_name='Fcpartner_Earnwealth_Solutions' then 'Aggregator'
-		when user_agent_name='Fcpartner_Dtpl' then 'Aggregator'
-		when user_agent_name='Fcpartner_Parvatiraut' then 'DSA Partner'
-		when user_agent_name is not null and (channel in ('Marketing') or channel is null) then 'DSA Partner'
-		when product_type='IMB' then 'Aggregator'
-		else channel
-	end as channel,
-	case 
-		when user_agent_name='Fcpartner_Openbank' then 'Fcpartner_Openbank'
-		when user_agent_name='Fcpartner_Earnwealth_Solutions' then 'Earnwealth'
-		when user_agent_name='Fcpartner_Dtpl' then 'Droom'
-		when user_agent_name='Fcpartner_Parvatiraut' then 'Fcpartner_Parvatiraut'
-		when user_agent_name is not null and (channel in ('DSA Partner', 'Marketing') or channel is null) then user_agent_name
-		when product_type='IMB' then 'IndMoney'
-		else sub_category
-	end as sub_category,
-	case 
-		when user_agent_name='Fcpartner_Openbank' then 'Aggregator'
-		when user_agent_name='Fcpartner_Earnwealth_Solutions' then 'Aggregator'
-		when user_agent_name='Fcpartner_Dtpl' then 'Aggregator-Two Wheeler'
-		when user_agent_name='Fcpartner_Parvatiraut' then 'DSA'
-		when user_agent_name is not null and (channel in ('Marketing') or channel is null) then 'DSA'
-		when product_type='IMB' then 'Aggregator'
-		else category
-	end as category,*/
 	old_source,
 	mobile_verify,
 	case
@@ -2898,7 +2582,6 @@ END AS bor_landline,
      OR nach_end_date IS NULL
    )
   THEN mandate_status
-
   WHEN cheque_available > 1 THEN 'PDC'
   ELSE 'Online'
 END AS payment_registration_method,
@@ -2993,6 +2676,125 @@ left join
 	cancelled_id=id
 left join tb_rule_pass on loan_id_pass=id
 left join tb_rule_reject on loan_id_reject=id
+)
+SELECT * FROM tb_lead
+);
+
+-- Stage 11: Create final dm_lead_details
+CREATE TABLE fair.public.dm_lead_details AS (
+WITH
+tb_lead AS (SELECT * FROM fair.public.dm_lead_stg_lead),
+tb_state_log AS (SELECT * FROM fair.public.dm_lead_stg_state_log),
+user_details AS (SELECT * FROM fair.public.dm_lead_stg_user_details),
+cnd AS (SELECT * FROM fair.public.dm_lead_stg_cnd),
+tb_report as (
+select CURRENT_DATE() as report_datetime
+),
+tb_borrower_agent as (
+select
+	ba_loan_id,
+	ba_uid,
+	name_user as ba_name,
+	mobile_user as ba_mobile,
+	namec_org_user as ba_login_name,
+	namec_user as ba_login_name_clean,
+	email_org_user as ba_email_original,
+	email_user as ba_name_from_email
+from
+	(
+	select
+		distinct logged_entity_id as ba_loan_id,
+		old_state,
+		new_state,
+		updated_by as ba_uid,
+		created_datetime,
+		row_number () over (partition by logged_entity_id order by created_datetime desc,id desc) as row_ba
+	from
+		tb_state_log
+	where
+		logged_entity_type = 'cent_loan'
+		and new_state in (1050)
+		and updated_by is not null
+		and updated_by not in (0, 1)
+	order by ba_loan_id,row_ba
+	) ba
+inner join user_details on user_details.uid_user=ba.ba_uid and row_ba=1
+),
+tb_preuw_agent as (
+select
+	preuw_loan_id,
+	preuw_uid,
+	name_user as preuw_name,
+	mobile_user as preuw_mobile,
+	namec_org_user as preuw_login_name,
+	namec_user as preuw_login_name_clean,
+	email_org_user as preuw_email_original,
+	email_user as preuw_name_from_email
+from
+	(
+	select
+		distinct logged_entity_id as preuw_loan_id,
+		old_state,
+		new_state,
+		updated_by as preuw_uid,
+		created_datetime,
+		row_number () over (partition by logged_entity_id order by created_datetime desc,id desc) as row_preuw
+	from
+		tb_state_log
+	where
+		logged_entity_type = 'cent_loan'
+		and ((old_state in (1050) and new_state in (1200)) or (old_state in (1200) and new_state in (1400,1100)))
+		and updated_by is not null
+		and updated_by not in (0, 1)
+	order by preuw_loan_id,row_preuw
+	) preuw
+inner join user_details on user_details.uid_user=preuw.preuw_uid and row_preuw=1
+),
+tb_dsa_rm as (
+select
+	distinct value1 as partner_uid,
+  	ICU_NORMALIZE(
+  FIRST_VALUE(
+    REGEXP_REPLACE(agent_name::text, '\\.', ' ')
+  )
+  OVER (
+    PARTITION BY value1
+    ORDER BY id DESC
+  ),
+  'Any-Title'
+) AS rm_dsa
+from
+	fair.public.cent_lead_assign_list clal
+where
+	deleted = 'N'
+	and value1 is not null
+	and value1 <> 0
+),
+tb_other_rm as (
+select
+	sources_name,
+	IFNULL(cast(rm_other_id as bigint),0) as rm_other_id,
+	IFNULL(namec_user,'') as rm_others
+from
+	(
+	select
+		distinct lower(old_source) as sources_name,
+        ICU_NORMALIZE(
+    		FIRST_VALUE(assigned_to::text)
+  			OVER (
+    		PARTITION BY old_source
+    		ORDER BY id DESC
+    		ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+  			),
+  				'Any-Title'
+			) AS rm_other_id
+	from
+		fair.public.cent_product_source_name cpsn
+	where
+		deleted = 'N'
+		and action_type = 'BORROWER_RM_ASSIGNED'
+	) rm_other
+	left join user_details on rm_other.rm_other_id::text=user_details.uid_user::text
 ),
 tb_lead_case AS (
   SELECT
@@ -3196,13 +2998,7 @@ select tb_lead_case.*,
 				case when rule_reject_date <=rule_pass_date then rule_pass_date end
 			end
 	end as pq_approved_date,	
-	--case when uw_name_final!='UW Not Assigned' then 1 else 0 end as uw_allocated_flag,
-	--case when uw_status_final='Cancelled' then 1 else 0 end as uw_cancelled_flag,
-	--case when uw_status_final='Returned' then 1 else 0 end as uw_returned_flag,
-	--case when uw_status_final='Forward to CS' then 1 else 0 end as uw_forward_to_cs_flag,
-	--case when uw_status_final='Live' then 1 else 0 end as uw_live_flag,
 	case when first_disburse_date is not null then 1 else 0 end as disbursed_flag,
-	--case when delist_date is not null and delist_date>uw_updated_date and loan_currentstate='Cancelled' and uw_status_final='Live' then 1 else 0 end as delist_flag,
 	case 
 		when rm_sub.partner_uid is not null then rm_sub.rm_dsa
 		when rm_main.partner_uid is not null then rm_main.rm_dsa
@@ -3255,6 +3051,7 @@ left join (
 select tb_report.*,tb_lead_result_case.* from tb_lead_result_case cross join tb_report
 );
 
+-- Stage 12: Create dm_lead_channel_details
 drop table if exists fair.public.dm_lead_channel_details;
 
 create table fair.public.dm_lead_channel_details as (
@@ -3268,6 +3065,7 @@ from
 	fair.public.dm_lead_details
 );
 
+-- Stage 13: Create dm_lead_borrower_basic_details
 drop table if exists fair.public.dm_lead_borrower_basic_details;
 
 create table fair.public.dm_lead_borrower_basic_details as (
@@ -3322,21 +3120,33 @@ from
 	fair.public.dm_lead_details
 );
 
+-- Stage 14: Cleanup staging tables
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_cnd;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_disburse;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_user_details;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_state_log;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_uw_data;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_loan_main;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_user_main;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_finalresult;
+DROP TABLE IF EXISTS fair.public.dm_lead_stg_lead;
+
+-- Stage 15: GRANT statements
 GRANT ALL ON TABLE dm_lead_details IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_lead_details in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_lead_details in schema public to analytics_admin;
 
 GRANT ALL ON TABLE dm_channel_master IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_channel_master in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_channel_master in schema public to analytics_admin;
 
 GRANT ALL ON TABLE dm_tenure_master IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_tenure_master in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_tenure_master in schema public to analytics_admin;
 
 GRANT ALL ON TABLE dm_pincode_master IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_pincode_master in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_pincode_master in schema public to analytics_admin;
 
 GRANT ALL ON TABLE dm_lead_channel_details IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_lead_channel_details in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_lead_channel_details in schema public to analytics_admin;
 
 GRANT ALL ON TABLE dm_lead_borrower_basic_details IN SCHEMA public to account_admin;
-GRANT SELECT ON TABLE dm_lead_borrower_basic_details in schema public to analytics_admin; 
+GRANT SELECT ON TABLE dm_lead_borrower_basic_details in schema public to analytics_admin;
 
